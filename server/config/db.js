@@ -9,7 +9,7 @@ dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']);
 const connectDB = async () => {
   try {
     const conn = await mongoose.connect(process.env.MONGODB_URI, {
-      // Mongoose 8+ no longer needs these options
+      family: 4, // Force IPv4 — fixes SRV DNS resolution failures on Render/cloud hosts
     });
     console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
   } catch (error) {
