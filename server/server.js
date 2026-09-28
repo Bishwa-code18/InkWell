@@ -2,11 +2,13 @@
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
+const path = require('path');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const helmet = require('helmet');
 const cookieParser = require('cookie-parser');
 const morgan = require('morgan');
+const passport = require('./config/passport');
 
 const connectDB = require('./config/db');
 const { connectRedis } = require('./config/redis');
@@ -65,7 +67,7 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser(process.env.COOKIE_SECRET));
-const path = require('path');
+app.use(passport.initialize()); // required for OAuth strategies
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 app.use('/public', express.static(path.join(__dirname, 'public')));
 
@@ -134,6 +136,20 @@ const shutdown = () => {
 process.on('SIGTERM', shutdown);   // nodemon restart signal
 process.on('SIGUSR2', shutdown);   // nodemon also sends SIGUSR2
 process.on('SIGINT', shutdown);    // Ctrl+C
+
+// ── Safety nets ────────────────────────────────────────────────────────────
+process.on('unhandledRejection', (reason) => {
+  console.error('\n💥 Unhandled Promise Rejection:', reason);
+  // Give the server a moment to finish in-flight requests, then exit
+  server.close(() => process.exit(1));
+  setTimeout(() => process.exit(1), 3000).unref();
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('\n💥 Uncaught Exception:', err);
+  server.close(() => process.exit(1));
+  setTimeout(() => process.exit(1), 3000).unref();
+});
 
 startServer();
 
