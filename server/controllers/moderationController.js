@@ -140,20 +140,22 @@ const updateUser = async (req, res, next) => {
 // ── GET /api/moderation/stats — Dashboard stats ────────────────────────────
 const getModStats = async (req, res, next) => {
   try {
-    const pendingReports = await Report.countDocuments({ status: 'pending' });
-    const totalUsers = await User.countDocuments();
-    const bannedUsers = await User.countDocuments({ isBanned: true });
-    const totalPosts = await Post.countDocuments();
+    const { getCache, setCache } = require('../config/redis');
+    const cacheKey = 'moderation:stats';
+    const cached = await getCache(cacheKey);
+    if (cached) return res.json({ success: true, stats: cached, cached: true });
 
-    res.json({
-      success: true,
-      stats: {
-        pendingReports,
-        totalUsers,
-        bannedUsers,
-        totalPosts
-      }
-    });
+    const [pendingReports, totalUsers, bannedUsers, totalPosts] = await Promise.all([
+      Report.countDocuments({ status: 'pending' }),
+      User.countDocuments(),
+      User.countDocuments({ isBanned: true }),
+      Post.countDocuments(),
+    ]);
+
+    const stats = { pendingReports, totalUsers, bannedUsers, totalPosts };
+    await setCache(cacheKey, stats, 60); // 60s TTL
+
+    res.json({ success: true, stats });
   } catch (err) {
     next(err);
   }

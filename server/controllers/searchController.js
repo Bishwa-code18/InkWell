@@ -46,15 +46,17 @@ const search = async (req, res, next) => {
     }
 
     if (type === 'users' || type === 'all') {
-      const regex = new RegExp(query, 'i');
       const isModOrAdmin = req.user && (req.user.role === 'moderator' || req.user.role === 'admin');
-      const userQuery = {
-        $or: [{ username: regex }, { displayName: regex }],
+      const userFilter = {
+        $text: { $search: query },
+        ...(isModOrAdmin ? {} : { isBanned: false }),
       };
-      if (!isModOrAdmin) {
-        userQuery.isBanned = false;
-      }
-      const users = await User.find(userQuery)
+
+      const users = await User.find(
+        userFilter,
+        { score: { $meta: 'textScore' } }
+      )
+        .sort({ score: { $meta: 'textScore' } })
         .select('username displayName avatar bio reputation role isBanned')
         .limit(pageSize)
         .lean();

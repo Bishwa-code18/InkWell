@@ -2,9 +2,12 @@
 const User = require('../models/User');
 const Post = require('../models/Post');
 const Comment = require('../models/Comment');
+const Vote = require('../models/Vote');
 const Bookmark = require('../models/Bookmark');
 const Achievement = require('../models/Achievement');
 const Notification = require('../models/Notification');
+const { clearTokenCookies } = require('../utils/generateToken');
+
 
 // ── GET /api/users/me ──────────────────────────────────────────────────────
 const getMe = async (req, res) => {
@@ -60,12 +63,31 @@ const changePassword = async (req, res, next) => {
 // ── DELETE /api/users/me ───────────────────────────────────────────────────
 const deleteMe = async (req, res, next) => {
   try {
-    await User.findByIdAndDelete(req.user._id);
+    const userId = req.user._id;
+
+    await Promise.all([
+      // Soft-remove posts (keep content but strip author)
+      Post.updateMany({ author: userId }, { $set: { author: null } }),
+      // Soft-delete comments
+      Comment.updateMany({ author: userId }, { $set: { isDeleted: true, body: '[deleted]', author: null } }),
+      // Remove votes cast by this user
+      Vote.deleteMany({ user: userId }),
+      // Remove bookmarks
+      Bookmark.deleteMany({ user: userId }),
+      // Remove notifications sent to and by this user
+      Notification.deleteMany({ $or: [{ recipient: userId }, { sender: userId }] }),
+    ]);
+
+    // Finally delete the user record
+    await User.findByIdAndDelete(userId);
+
+    clearTokenCookies(res);
     res.json({ success: true, message: 'Account deleted.' });
   } catch (err) {
     next(err);
   }
 };
+
 
 // ── GET /api/users/:username ───────────────────────────────────────────────
 const getUser = async (req, res, next) => {

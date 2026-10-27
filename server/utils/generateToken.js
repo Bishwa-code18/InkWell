@@ -28,6 +28,14 @@ const generateSecureToken = () => {
 };
 
 /**
+ * Hash a refresh token before storing in DB (SHA-256).
+ * Raw token goes in the cookie; hashed token is stored in the DB.
+ */
+const hashToken = (token) => {
+  return crypto.createHash('sha256').update(token).digest('hex');
+};
+
+/**
  * Set tokens as httpOnly cookies on the response.
  */
 const setTokenCookies = (res, accessToken, refreshToken) => {
@@ -58,6 +66,7 @@ module.exports = {
   generateAccessToken,
   generateRefreshToken,
   generateSecureToken,
+  hashToken,
   setTokenCookies,
   clearTokenCookies,
 };

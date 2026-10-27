@@ -5,6 +5,7 @@ const {
   generateAccessToken,
   generateRefreshToken,
   generateSecureToken,
+  hashToken,
   setTokenCookies,
   clearTokenCookies,
 } = require('../utils/generateToken');
@@ -32,6 +33,35 @@ const loginValidation = [
   body('email').trim().isEmail().normalizeEmail().withMessage('Valid email required'),
   body('password').notEmpty().withMessage('Password is required'),
 ];
+
+// ── Internal helper: issue tokens + store hashed refresh token ────────────
+const issueTokens = async (res, userId) => {
+  const accessToken = generateAccessToken(userId);
+  const refreshToken = generateRefreshToken(userId);
+
+  // Store hashed refresh token in DB (max 5 sessions per user)
+  const hashed = hashToken(refreshToken);
+  await User.findByIdAndUpdate(userId, {
+    $push: {
+      refreshTokens: {
+        $each: [hashed],
+        $slice: -5, // keep only the last 5 sessions
+      },
+    },
+  });
+
+  setTokenCookies(res, accessToken, refreshToken);
+  return { accessToken, refreshToken };
+};
+
+// ── Internal helper: revoke one refresh token ─────────────────────────────
+const revokeRefreshToken = async (userId, rawToken) => {
+  if (!rawToken) return;
+  const hashed = hashToken(rawToken);
+  await User.findByIdAndUpdate(userId, {
+    $pull: { refreshTokens: hashed },
+  });
+};
 
 // ── Register ───────────────────────────────────────────────────────────────
 const register = [
@@ -65,9 +95,7 @@ const register = [
       // Send verification email (non-blocking)
       sendVerificationEmail(email, username, verificationToken).catch(console.error);
 
-      const accessToken = generateAccessToken(user._id);
-      const refreshToken = generateRefreshToken(user._id);
-      setTokenCookies(res, accessToken, refreshToken);
+      const { accessToken } = await issueTokens(res, user._id);
 
       res.status(201).json({
         success: true,
@@ -93,7 +121,7 @@ const login = [
 
       const { email, password } = req.body;
 
-      const user = await User.findOne({ email }).select('+passwordHash');
+      const user = await User.findOne({ email }).select('+passwordHash +refreshTokens');
       if (!user || !user.passwordHash) {
         return res.status(401).json({ message: 'Invalid email or password.' });
       }
@@ -107,9 +135,7 @@ const login = [
         return res.status(401).json({ message: 'Invalid email or password.' });
       }
 
-      const accessToken = generateAccessToken(user._id);
-      const refreshToken = generateRefreshToken(user._id);
-      setTokenCookies(res, accessToken, refreshToken);
+      const { accessToken } = await issueTokens(res, user._id);
 
       res.json({
         success: true,
@@ -124,6 +150,15 @@ const login = [
 
 // ── Logout ─────────────────────────────────────────────────────────────────
 const logout = async (req, res) => {
+  try {
+    // Revoke the current refresh token from DB
+    const rawRefreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
+    if (req.user?._id && rawRefreshToken) {
+      await revokeRefreshToken(req.user._id, rawRefreshToken);
+    }
+  } catch {
+    // Non-blocking — always clear cookies
+  }
   clearTokenCookies(res);
   res.json({ success: true, message: 'Logged out successfully.' });
 };
@@ -136,22 +171,46 @@ const refreshToken = async (req, res, next) => {
       return res.status(401).json({ message: 'No refresh token provided.' });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_REFRESH_SECRET);
-    const user = await User.findById(decoded.id);
-    if (!user) {
-      return res.status(401).json({ message: 'User not found.' });
+    // Verify JWT signature first
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_REFRESH_SECRET);
+    } catch (err) {
+      if (err.name === 'TokenExpiredError') {
+        clearTokenCookies(res);
+        return res.status(401).json({ message: 'Session expired. Please log in again.' });
+      }
+      return res.status(401).json({ message: 'Invalid refresh token.' });
     }
 
-    const newAccessToken = generateAccessToken(user._id);
-    const newRefreshToken = generateRefreshToken(user._id);
-    setTokenCookies(res, newAccessToken, newRefreshToken);
+    // Verify the hashed token exists in DB (blacklist check)
+    const hashed = hashToken(token);
+    const user = await User.findOne({
+      _id: decoded.id,
+      refreshTokens: hashed,
+    }).select('+refreshTokens');
+
+    if (!user) {
+      // Token replay attack detected — invalidate ALL sessions for this user
+      await User.findByIdAndUpdate(decoded.id, { $set: { refreshTokens: [] } });
+      clearTokenCookies(res);
+      return res.status(401).json({ message: 'Session invalid. Please log in again.' });
+    }
+
+    if (user.isBanned) {
+      clearTokenCookies(res);
+      return res.status(403).json({ message: 'Your account has been banned.' });
+    }
+
+    // Rotate: remove old token, issue new pair
+    await User.findByIdAndUpdate(user._id, {
+      $pull: { refreshTokens: hashed },
+    });
+
+    const { accessToken: newAccessToken } = await issueTokens(res, user._id);
 
     res.json({ success: true, accessToken: newAccessToken });
   } catch (err) {
-    if (err.name === 'TokenExpiredError') {
-      clearTokenCookies(res);
-      return res.status(401).json({ message: 'Session expired. Please log in again.' });
-    }
     next(err);
   }
 };
@@ -206,8 +265,11 @@ const resetPassword = [
       user.passwordHash = req.body.password;
       user.passwordResetToken = undefined;
       user.passwordResetExpires = undefined;
+      // Invalidate ALL existing sessions after password reset
+      user.refreshTokens = [];
       await user.save();
 
+      clearTokenCookies(res);
       res.json({ success: true, message: 'Password reset successfully. You can now log in.' });
     } catch (err) {
       next(err);
@@ -216,15 +278,14 @@ const resetPassword = [
 ];
 
 // ── OAuth Callback Handler ─────────────────────────────────────────────────
+// FIX: Token is set as httpOnly cookie — NOT exposed in URL query string.
 const oauthCallback = async (req, res) => {
   try {
     const user = req.user;
-    const accessToken = generateAccessToken(user._id);
-    const refreshToken = generateRefreshToken(user._id);
-    setTokenCookies(res, accessToken, refreshToken);
+    await issueTokens(res, user._id);
 
-    // Redirect to frontend with token in query (client stores it)
-    res.redirect(`${process.env.CLIENT_URL}/oauth/success?token=${accessToken}`);
+    // Redirect to frontend — no token in URL (client calls /api/users/me after redirect)
+    res.redirect(`${process.env.CLIENT_URL}/oauth/success`);
   } catch (err) {
     res.redirect(`${process.env.CLIENT_URL}/login?error=oauth_failed`);
   }
@@ -247,6 +308,11 @@ const verifyEmail = async (req, res, next) => {
   }
 };
 
+// ── Get current authenticated user (used after OAuth redirect) ────────────
+const getMe = async (req, res) => {
+  res.json({ success: true, user: req.user.toPublicJSON() });
+};
+
 module.exports = {
   register,
   login,
@@ -256,4 +322,5 @@ module.exports = {
   resetPassword,
   oauthCallback,
   verifyEmail,
+  getMe,
 };

@@ -4,6 +4,7 @@ const Post = require('../models/Post');
 const Vote = require('../models/Vote');
 const Notification = require('../models/Notification');
 const { adjustReputation } = require('../utils/calculateReputation');
+const { body, validationResult } = require('express-validator');
 
 // ── GET /api/posts/:postId/comments ───────────────────────────────────────
 const getComments = async (req, res, next) => {
@@ -60,14 +61,24 @@ const getComments = async (req, res, next) => {
 };
 
 // ── POST /api/posts/:postId/comments ─────────────────────────────────────
-const createComment = async (req, res, next) => {
+const createCommentValidation = [
+  body('body')
+    .trim()
+    .notEmpty().withMessage('Comment body is required.')
+    .isLength({ max: 10000 }).withMessage('Comment cannot exceed 10,000 characters.'),
+];
+
+const createComment = [
+  ...createCommentValidation,
+  async (req, res, next) => {
   try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ message: errors.array()[0].msg });
+    }
+
     const { postId } = req.params;
     const { body, parentId } = req.body;
-
-    if (!body?.trim()) {
-      return res.status(400).json({ message: 'Comment body is required.' });
-    }
 
     const post = await Post.findById(postId);
     if (!post) return res.status(404).json({ message: 'Post not found.' });
@@ -80,9 +91,6 @@ const createComment = async (req, res, next) => {
         return res.status(400).json({ message: 'Maximum comment depth reached.' });
       }
       depth = parent.depth + 1;
-
-      // Add to parent's children array
-      await Comment.findByIdAndUpdate(parentId, { $push: { children: null } }); // placeholder
     }
 
     const comment = await Comment.create({
@@ -145,7 +153,8 @@ const createComment = async (req, res, next) => {
   } catch (err) {
     next(err);
   }
-};
+  },
+];
 
 // ── PUT /api/posts/:postId/comments/:id ───────────────────────────────────
 const updateComment = async (req, res, next) => {
@@ -221,17 +230,22 @@ const voteComment = async (req, res, next) => {
 
     if (existingVote) {
       if (existingVote.value === Number(value)) {
+        // Toggle off (remove vote)
         await existingVote.deleteOne();
         if (value === 1) { comment.upvotes = Math.max(0, comment.upvotes - 1); repDelta = -10; }
         else { comment.downvotes = Math.max(0, comment.downvotes - 1); repDelta = 2; }
       } else {
+        // Change vote direction — capture old value BEFORE saving
+        const oldValue = existingVote.value;
         existingVote.value = Number(value);
         await existingVote.save();
-        if (existingVote.value === 1) {
+        if (oldValue === -1) {
+          // Was downvote, now upvote
           comment.downvotes = Math.max(0, comment.downvotes - 1);
           comment.upvotes += 1;
           repDelta = 12;
         } else {
+          // Was upvote, now downvote
           comment.upvotes = Math.max(0, comment.upvotes - 1);
           comment.downvotes += 1;
           repDelta = -12;

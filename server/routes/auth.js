@@ -4,18 +4,22 @@ const router = express.Router();
 const passport = require('../config/passport');
 const {
   register, login, logout, refreshToken,
-  forgotPassword, resetPassword, oauthCallback, verifyEmail,
+  forgotPassword, resetPassword, oauthCallback, verifyEmail, getMe,
 } = require('../controllers/authController');
 const { authLimiter } = require('../middleware/rateLimiter');
+const { protect, optionalAuth } = require('../middleware/authMiddleware');
 
 // Standard auth
 router.post('/register', authLimiter, register);
 router.post('/login', authLimiter, login);
-router.post('/logout', logout);
+router.post('/logout', optionalAuth, logout);     // optionalAuth so we can revoke the token
 router.post('/refresh-token', refreshToken);
 router.post('/forgot-password', authLimiter, forgotPassword);
 router.post('/reset-password/:token', authLimiter, resetPassword);
 router.get('/verify-email', verifyEmail);
+
+// Called by client after OAuth redirect to get the user object
+router.get('/me', protect, getMe);
 
 // Google OAuth
 router.get('/google', (req, res, next) => {

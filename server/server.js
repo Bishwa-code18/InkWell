@@ -85,9 +85,19 @@ app.use('/api/search', searchRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/moderation', moderationRoutes);
 
-// Health check
+// Health check — reports real infrastructure state
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  const mongoose = require('mongoose');
+  const dbState = ['disconnected', 'connected', 'connecting', 'disconnecting'];
+  const dbStatus = dbState[mongoose.connection.readyState] || 'unknown';
+  const healthy = mongoose.connection.readyState === 1;
+
+  res.status(healthy ? 200 : 503).json({
+    status: healthy ? 'ok' : 'degraded',
+    db: dbStatus,
+    timestamp: new Date().toISOString(),
+    uptime: Math.floor(process.uptime()),
+  });
 });
 
 // 404 handler
