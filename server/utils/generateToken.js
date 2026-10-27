@@ -40,26 +40,33 @@ const hashToken = (token) => {
  */
 const setTokenCookies = (res, accessToken, refreshToken) => {
   const isProd = process.env.NODE_ENV === 'production';
-
-  res.cookie('accessToken', accessToken, {
+  const cookieOptions = {
     httpOnly: true,
     secure: isProd,
-    sameSite: isProd ? 'strict' : 'lax',
+    sameSite: isProd ? 'none' : 'lax',
+  };
+
+  res.cookie('accessToken', accessToken, {
+    ...cookieOptions,
     maxAge: 15 * 60 * 1000, // 15 minutes
   });
 
   res.cookie('refreshToken', refreshToken, {
-    httpOnly: true,
-    secure: isProd,
-    sameSite: isProd ? 'strict' : 'lax',
+    ...cookieOptions,
     maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     path: '/api/auth/refresh-token', // restrict refresh token cookie path
   });
 };
 
 const clearTokenCookies = (res) => {
-  res.clearCookie('accessToken');
-  res.clearCookie('refreshToken', { path: '/api/auth/refresh-token' });
+  const isProd = process.env.NODE_ENV === 'production';
+  const cookieOptions = {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: isProd ? 'none' : 'lax',
+  };
+  res.clearCookie('accessToken', cookieOptions);
+  res.clearCookie('refreshToken', { ...cookieOptions, path: '/api/auth/refresh-token' });
 };
 
 module.exports = {
